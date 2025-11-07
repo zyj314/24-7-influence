@@ -185,8 +185,8 @@ class CFEMarket:
         m.power_balance = Constraint(m.T, rule=lambda m, t: sum(m.P_gen[g, t] for g in m.G) == sum(
             self.Pd.loc[b, t] + m.P_charge[b, t] - m.P_discharge[b, t] - self.solar_output.loc[b, t] -
             self.wind_output.loc[b, t] for b in m.B))
-        m.dc_flow = Constraint(m.E, m.T, rule=lambda m, n, t: m.Pf[self.branch_idx[n], t] == sum((sum(
-            m.P_gen[g, t] * BusGen(g, b) for g in m.G) - self.Pd.loc[b, t] - m.P_charge[b, t] + m.P_discharge[b, t] +self.solar_output.loc[b, t] +self.wind_output.loc[b, t]) * PTDF(n,b)for b in m.B))
+        m.dc_flow = Constraint(m.E, m.T, rule=lambda m, n, t: m.Pf[self.branch_idx[n], t] == sum((sum(m.P_gen[g, t] * BusGen(g, b) for g in m.G)
+        - self.Pd.loc[b, t] - m.P_charge[b, t] + m.P_discharge[b, t] +self.solar_output.loc[ b, t] +self.wind_output.loc[b, t]) * PTDF(n, b)for b in m.B))
         m.branch_upper = Constraint(m.E, m.T, rule=lambda m, n, t: m.Pf[self.branch_idx[n], t] <= self.Pf_max.at[
             self.branch_idx[n], 'Pf_max'])
         m.branch_lower = Constraint(m.E, m.T, rule=lambda m, n, t: m.Pf[self.branch_idx[n], t] >= -self.Pf_max.at[
@@ -194,7 +194,7 @@ class CFEMarket:
         m.gen_min = Constraint(m.G, m.T, rule=lambda m, g, t: m.P_gen[g, t] >= self.Pg_min.at[g, 'Pg_min'])
         m.gen_max = Constraint(m.G, m.T, rule=lambda m, g, t: m.P_gen[g, t] <= self.Pg_max.at[g, 'Pg_max'])
         m.storage_dynamic = Constraint(m.B, m.T, rule=lambda m, b, t: m.E_storage[b, t] == (
-            0.5 * m.P_Cap * self.storage_duration if t == 0 else m.E_storage[b, t - 1]) + self.storage_eff * m.P_charge[ b, t] - m.P_discharge[b, t] / self.storage_eff)
+            0.5 * m.P_Cap * self.storage_duration if t == 0 else m.E_storage[b, t - 1]) + self.storage_eff * m.P_charge[b, t] - m.P_discharge[b, t] / self.storage_eff)
         m.storage_limit = Constraint(m.B, m.T,
                                      rule=lambda m, b, t: m.E_storage[b, t] <= m.P_Cap * self.storage_duration)
         m.charge_limit = Constraint(m.B, m.T, rule=lambda m, b, t: m.P_charge[b, t] <= m.P_Cap)
@@ -227,22 +227,39 @@ class CFEMarket:
         m = self.model
         total_charge = [sum(value(m.P_charge[b, t]) for b in m.B) for t in m.T]
         total_discharge = [sum(value(m.P_discharge[b, t]) for b in m.B) for t in m.T]
+
+        # 保存每个节点每个时刻的LMP
+        nodal_LMP = {}
         avg_LMP = []
+
         for t in m.T:
             lambda_pb = m.dual[m.power_balance[t]]
-            lmp_values = [lambda_pb + sum(
-                (m.dual[m.branch_lower[n, t]] - m.dual[m.branch_upper[n, t]]) * self.PTDF_matrix[b][self.branch_idx[n]]
-                for n in self.branch_num_idx) for b in m.B]
-            avg_LMP.append(np.mean(lmp_values))
-        revenue = sum(sum((- self.storage_opex - avg_LMP[t]) * value(m.P_charge[b, t]) for b in m.B) for t in m.T) - \
-                      sum(sum((avg_LMP[t] - self.storage_opex) * value(m.P_discharge[b, t]) for b in m.B) for t in m.T)
+            lmp_values = {}
+            for b in m.B:
+                lmp = lambda_pb + sum(
+                    (m.dual[m.branch_lower[n, t]] - m.dual[m.branch_upper[n, t]]) * self.PTDF_matrix[b][
+                        self.branch_idx[n]]
+                    for n in self.branch_num_idx)
+                lmp_values[b] = lmp
+
+                # 初始化节点LMP列表
+                if b not in nodal_LMP:
+                    nodal_LMP[b] = []
+                nodal_LMP[b].append(lmp)
+
+            avg_LMP.append(np.mean(list(lmp_values.values())))
+
+        revenue = sum(sum((- self.storage_opex - nodal_LMP[b][t]) * value(m.P_charge[b, t]) for b in m.B) for t in m.T) + \
+                  sum(sum((nodal_LMP[b][t] - self.storage_opex) * value(m.P_discharge[b, t]) for b in m.B) for t in m.T)
+
         return {'scenario': self.scenario, 'cost': value(m.obj), 'storage_cap': sum(value(m.P_Cap) for b in m.B),
-                'P_charge': total_charge, 'P_discharge': total_discharge, 'LMP': avg_LMP,
+                'P_charge': total_charge, 'P_discharge': total_discharge,
+                'LMP': avg_LMP, 'nodal_LMP': nodal_LMP,
                 'emissions': sum(value(m.P_gen[g, t]) * self.GCI.at[g, 'GCI'] for g in m.G for t in m.T),
                 'revenue': revenue}
 
 
-def plot_results(vol, hourly, market, target_date, avg_LMP=None, self=None):
+def plot_results(vol, hourly, market, target_date):
     hours = np.arange(24)
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 
@@ -288,8 +305,10 @@ def plot_results(vol, hourly, market, target_date, avg_LMP=None, self=None):
 
     # 关键指标
     metrics = ['成本', '储能充放电', '储能收益', '排放']
-    vol_vals = [vol['cost'] / 1000, np.sum(vol['P_charge']+vol['P_discharge']), vol['revenue'], vol['emissions'] / 100]
-    hourly_vals = [hourly['cost'] / 1000, np.sum(hourly['P_charge']+hourly['P_discharge']), hourly['revenue'], hourly['emissions'] / 100]
+    vol_vals = [vol['cost'] / 1000, np.sum(vol['P_charge'] + vol['P_discharge']), vol['revenue'],
+                vol['emissions'] / 100]
+    hourly_vals = [hourly['cost'] / 1000, np.sum(hourly['P_charge'] + hourly['P_discharge']), hourly['revenue'],
+                   hourly['emissions'] / 100]
     x = np.arange(len(metrics))
     width = 0.35
     axes[1, 1].bar(x - width / 2, vol_vals, width, label='Vol', alpha=0.7)
@@ -315,13 +334,27 @@ def plot_results(vol, hourly, market, target_date, avg_LMP=None, self=None):
     axes[1, 2].legend(loc='upper left', fontsize=10)
     axes[1, 2].grid(True, alpha=0.3)
 
-    #储能收益
+    print("\n生成各节点LMP折线图...")
 
+    nodal_lmp_vol = vol['nodal_LMP']
+    nodes = sorted(nodal_lmp_vol.keys(), key=lambda x: int(x))
+    hours = np.arange(24)
 
-    plt.tight_layout()
-    plt.savefig('lmp_results.png', dpi=300, bbox_inches='tight')
-    plt.close()
+    from matplotlib.backends.backend_pdf import PdfPages
+    with PdfPages('nodal_lmp_lines.pdf') as pdf:
+        for node in nodes:
+            fig_node = plt.figure(figsize=(8, 4.5))
+            plt.plot(hours, nodal_lmp_vol[node], '-o', linewidth=2.0, markersize=4, label='Volumetric')
+            plt.plot(hours, hourly['nodal_LMP'][node], '-s', linewidth=2.0, markersize=4, label='Hourly (90%)')
+            plt.xlabel('时段 (h)', fontsize=12)
+            plt.ylabel('LMP ($/MWh)', fontsize=12)
+            plt.title(f'节点{node} - LMP时序（{target_date}）', fontsize=13, fontweight='bold')
+            plt.grid(True, alpha=0.3)
+            plt.legend(fontsize=10)
+            pdf.savefig(fig_node, bbox_inches='tight')
+            plt.close(fig_node)
 
+    print("各节点LMP折线图已保存为 nodal_lmp_lines.pdf")
 
 if __name__ == "__main__":
     print("=" * 80)
@@ -340,7 +373,6 @@ if __name__ == "__main__":
     # 加载数据
     load_24h, solar_24h, wind_24h = load_real_data(load_file, solar_file, wind_file, target_date, auto_scale=True,
                                                    target_capacity=6195)
-
 
     net = pn.case39()
     market = CFEMarket(net, load_24h, solar_24h, wind_24h, solver='gurobi', congestion_factor=congestion_factor,
@@ -369,4 +401,4 @@ if __name__ == "__main__":
 
     # 生成图表
     plot_results(vol, hourly, market, target_date)
-    print(f"✓ 完成！图片已保存为 lmp_results.png")
+    print(f"图片已保存为 lmp_results.png")
