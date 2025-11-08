@@ -247,7 +247,12 @@ class CFEMarket:
                     nodal_LMP[b] = []
                 nodal_LMP[b].append(lmp)
 
-            avg_LMP.append(np.mean(list(lmp_values.values())))
+            # 按节点负荷加权平均计算avg_LMP
+            # 按节点负荷加权平均
+            total_load_t = sum(self.Pd.loc[b, t] for b in m.B)
+            weighted_lmp = sum(lmp_values[b] * self.Pd.loc[b, t] for b in m.B) / total_load_t
+            avg_LMP.append(weighted_lmp)
+
 
         revenue = sum(sum((- self.storage_opex - nodal_LMP[b][t]) * value(m.P_charge[b, t]) for b in m.B) for t in m.T) + \
                   sum(sum((nodal_LMP[b][t] - self.storage_opex) * value(m.P_discharge[b, t]) for b in m.B) for t in m.T)
@@ -334,6 +339,9 @@ def plot_results(vol, hourly, market, target_date):
     axes[1, 2].legend(loc='upper left', fontsize=10)
     axes[1, 2].grid(True, alpha=0.3)
 
+    plt.tight_layout()
+    plt.savefig('lmp_results.png', dpi=300, bbox_inches='tight')
+
     print("\n生成各节点LMP折线图...")
 
     nodal_lmp_vol = vol['nodal_LMP']
@@ -357,9 +365,7 @@ def plot_results(vol, hourly, market, target_date):
     print("各节点LMP折线图已保存为 nodal_lmp_lines.pdf")
 
 if __name__ == "__main__":
-    print("=" * 80)
     print("多节点CFE市场: Volumetric vs Hourly - 自动缩放版本")
-    print("=" * 80)
 
     # 配置
     data_dir = r'C:\Users\86178\PycharmProjects\pythonProject\24 7 LMP'
