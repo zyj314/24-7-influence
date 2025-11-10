@@ -15,7 +15,7 @@ plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
 
-def load_real_data(load_file, solar_file, wind_file, target_date='2017-01-01', auto_scale=True, target_capacity=6195):
+def load_real_data(load_file, solar_file, wind_file, target_date='2017-06-27', auto_scale=True, target_capacity=6195):
     print(f"\n正在加载 {target_date} 的数据...")
 
     # 读取数据
@@ -131,7 +131,7 @@ class CFEMarket:
                 ratio = bus_load[b] / total_load if bus_load.sum() > 0 else 1.0 / len(self.bus_idx)
                 self.Pd.loc[bus_idx, t] = ratio * load_data[t]
 
-        self.participant_demand = self.Pd * 0.1
+        self.participant_demand = self.Pd * 0.09
 
         # 分配可再生能源
         self.solar_output = pd.DataFrame(0.0, index=self.bus_idx, columns=range(self.T))
@@ -172,7 +172,7 @@ class CFEMarket:
         m.E_storage = Var(m.B, m.T, bounds=(0, None))
         m.P_Cap = Param(initialize=50)
         m.Pf = Var(self.branch_idx, m.T, bounds=(None, None))
-
+        m.E_storagefirst = Param(initialize=50)
         # 辅助函数
         BusGen = lambda g, b: 1 if g[1:] == b else 0
         PTDF = lambda n, b: self.PTDF_matrix[b][self.branch_idx[n]]
@@ -194,14 +194,14 @@ class CFEMarket:
         m.gen_min = Constraint(m.G, m.T, rule=lambda m, g, t: m.P_gen[g, t] >= self.Pg_min.at[g, 'Pg_min'])
         m.gen_max = Constraint(m.G, m.T, rule=lambda m, g, t: m.P_gen[g, t] <= self.Pg_max.at[g, 'Pg_max'])
         m.storage_dynamic = Constraint(m.B, m.T, rule=lambda m, b, t: m.E_storage[b, t] == (
-            0.5 * m.P_Cap * self.storage_duration if t == 0 else m.E_storage[b, t - 1]) + self.storage_eff * m.P_charge[b, t] - m.P_discharge[b, t] / self.storage_eff)
+            m.E_storagefirst + self.storage_eff * m.P_charge[b, t] - m.P_discharge[b, t] / self.storage_eff if t == 0 else m.E_storage[b, t - 1]) + self.storage_eff * m.P_charge[b, t] - m.P_discharge[b, t] / self.storage_eff)
         m.storage_limit = Constraint(m.B, m.T,
                                      rule=lambda m, b, t: m.E_storage[b, t] <= m.P_Cap * self.storage_duration)
         m.charge_limit = Constraint(m.B, m.T, rule=lambda m, b, t: m.P_charge[b, t] <= m.P_Cap)
         m.discharge_limit = Constraint(m.B, m.T, rule=lambda m, b, t: m.P_discharge[b, t] <= m.P_Cap)
-        m.storage_cyclic = Constraint(m.B, rule=lambda m, b: m.E_storage[b, 0] == m.E_storage[b, self.T - 1])
+        m.storage_cyclic = Constraint(m.B, rule=lambda m, b: m.E_storagefirst == m.E_storage[b, self.T - 1])
 
-        # CFE匹配约束
+        #CFE匹配约束
         if scenario == 'volumetric':
             m.matching = Constraint(rule=lambda m: sum(
                 self.solar_output.loc[b, t] + self.wind_output.loc[b, t] + m.P_discharge[b, t] - m.P_charge[b, t] for b
@@ -227,7 +227,7 @@ class CFEMarket:
         m = self.model
         total_charge = [sum(value(m.P_charge[b, t]) for b in m.B) for t in m.T]
         total_discharge = [sum(value(m.P_discharge[b, t]) for b in m.B) for t in m.T]
-
+        total_storage = [value(m.E_storagefirst) * 39] + [sum(value(m.E_storage[b, t]) for b in m.B) for t in m.T]
         # 保存每个节点每个时刻的LMP
         nodal_LMP = {}
         avg_LMP = []
@@ -261,11 +261,12 @@ class CFEMarket:
                 'P_charge': total_charge, 'P_discharge': total_discharge,
                 'LMP': avg_LMP, 'nodal_LMP': nodal_LMP,
                 'emissions': sum(value(m.P_gen[g, t]) * self.GCI.at[g, 'GCI'] for g in m.G for t in m.T),
-                'revenue': revenue}
+                'revenue': revenue,'E_storage':total_storage}
 
 
 def plot_results(vol, hourly, market, target_date):
     hours = np.arange(24)
+    hoursE = np.arange(25)
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 
     # LMP对比
@@ -278,13 +279,16 @@ def plot_results(vol, hourly, market, target_date):
     axes[0, 0].grid(True, alpha=0.3)
 
     # 储能充电
-    axes[0, 1].bar(hours - 0.2, vol['P_charge'], width=0.35, label='Vol', alpha=0.7, color='blue')
-    axes[0, 1].bar(hours + 0.2, hourly['P_charge'], width=0.35, label='Hourly', alpha=0.7, color='red')
+    net_vol = [vol['P_discharge'][t] - vol['P_charge'][t] for t in range(24)]
+    net_hourly = [hourly['P_discharge'][t] - hourly['P_charge'][t] for t in range(24)]
+    axes[0, 1].bar(hours - 0.2, net_vol, width=0.35, alpha=0.4, color='blue')
+    axes[0, 1].bar(hours + 0.2, net_hourly, width=0.35, alpha=0.4, color='red')
     axes[0, 1].set_xlabel('时段 (h)', fontsize=12)
     axes[0, 1].set_ylabel('功率 (MW)', fontsize=12)
     axes[0, 1].set_title('储能充电', fontsize=13, fontweight='bold')
-    axes[0, 1].legend(fontsize=11)
-    axes[0, 1].grid(True, alpha=0.3, axis='y')
+
+
+
 
     # 储能放电
     axes[0, 2].bar(hours - 0.2, vol['P_discharge'], width=0.35, label='Vol', alpha=0.7, color='blue')
@@ -324,19 +328,13 @@ def plot_results(vol, hourly, market, target_date):
     axes[1, 1].legend(fontsize=11)
     axes[1, 1].grid(True, alpha=0.3, axis='y')
 
-    # LMP与储能套利
-    axes[1, 2].plot(hours, vol['LMP'], 'b-', linewidth=2.5, alpha=0.7, label='Vol-LMP')
-    axes[1, 2].plot(hours, hourly['LMP'], 'r-', linewidth=2.5, alpha=0.7, label='Hourly-LMP')
-    ax2 = axes[1, 2].twinx()
-    net_vol = [vol['P_discharge'][t] - vol['P_charge'][t] for t in range(24)]
-    net_hourly = [hourly['P_discharge'][t] - hourly['P_charge'][t] for t in range(24)]
-    ax2.bar(hours - 0.2, net_vol, width=0.35, alpha=0.4, color='blue')
-    ax2.bar(hours + 0.2, net_hourly, width=0.35, alpha=0.4, color='red')
+    # 储能变化情况
+    axes[1, 2].plot(hoursE, vol['E_storage'], 'b-o', label='Volumetric', linewidth=2.5)
+    axes[1, 2].plot(hoursE, hourly['E_storage'], 'r-s', label='Hourly (90%)', linewidth=2.5)
     axes[1, 2].set_xlabel('时段 (h)', fontsize=12)
-    axes[1, 2].set_ylabel('LMP ($/MWh)', fontsize=12)
-    ax2.set_ylabel('净放电 (MW)', fontsize=12)
-    axes[1, 2].set_title('LMP与储能套利', fontsize=13, fontweight='bold')
-    axes[1, 2].legend(loc='upper left', fontsize=10)
+    axes[1, 2].set_ylabel('储能容量 (MWh)', fontsize=12)
+    axes[1, 2].set_title(f'储能变化情况 ({target_date})', fontsize=13, fontweight='bold')
+    axes[1, 2].legend(fontsize=11)
     axes[1, 2].grid(True, alpha=0.3)
 
     plt.tight_layout()
@@ -346,7 +344,6 @@ def plot_results(vol, hourly, market, target_date):
 
     nodal_lmp_vol = vol['nodal_LMP']
     nodes = sorted(nodal_lmp_vol.keys(), key=lambda x: int(x))
-    hours = np.arange(24)
 
     from matplotlib.backends.backend_pdf import PdfPages
     with PdfPages('nodal_lmp_lines.pdf') as pdf:
@@ -389,7 +386,7 @@ if __name__ == "__main__":
     market.create_model('volumetric')
     vol = market.solve()
     if vol:
-        print(f"✓ 成本: ${vol['cost']:.2f}, 储能: {vol['storage_cap']:.1f} MW, 排放: {vol['emissions']:.1f} tCO2")
+        print(f"✓ 成本: ${vol['cost']:.2f}, 储能: {vol['storage_cap']:.1f} MW, 排放: {vol['emissions']:.1f} tCO2,放电：{vol['P_discharge']}:.1f,充电：{vol['P_charge']}:.1f")
     else:
         print("求解失败")
         exit()
