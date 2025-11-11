@@ -136,17 +136,28 @@ class CFEMarket:
         # 分配可再生能源
         self.solar_output = pd.DataFrame(0.0, index=self.bus_idx, columns=range(self.T))
         self.wind_output = pd.DataFrame(0.0, index=self.bus_idx, columns=range(self.T))
-        solar_bus = str(min(5, len(self.bus_idx) - 1))
-        wind_bus = str(min(10, len(self.bus_idx) - 1))
+        solar_buses = [str(min(i, len(self.bus_idx) - 1)) for i in [ 5, 10, 15, 20, 25]]
+        solar_buses = [b for b in solar_buses if int(b) < len(self.bus_idx)]
+
+        wind_buses = [str(min(i,len(self.bus_idx) - 1)) for i in [ 7, 12, 17, 22, 27]]
+        wind_buses = [b for b in wind_buses if int(b) < len(self.bus_idx)]
+
         for t in range(self.T):
-            self.solar_output.loc[solar_bus, t] = solar_data[t]
-            self.wind_output.loc[wind_bus, t] = wind_data[t]
+            # 光伏风电均分到5个节点
+            solar_per_bus = solar_data[t] / len(solar_buses)
+            for solar_bus in solar_buses:
+                self.solar_output.loc[solar_bus, t] = solar_per_bus
+            wind_per_bus = wind_data[t] / len(wind_buses)
+            for wind_bus in wind_buses:
+                self.wind_output.loc[wind_bus, t] = wind_per_bus
 
         # 储能参数
         self.storage_eff = 0.95
         self.storage_duration = 2
         self.storage_opex = 2.0
-
+        self.storage_buses = [str(min(i, len(self.bus_idx) - 1)) for i in [3, 8, 13, 18, 23]]
+        self.storage_buses = [b for b in self.storage_buses if int(b) < len(self.bus_idx)]
+        print(f"\n储能配置：{len(self.storage_buses)}个储能节点 - 节点{self.storage_buses}")
         # CFE诊断
         total_participant = self.participant_demand.sum().sum()
         total_renewable = self.solar_output.sum().sum() + self.wind_output.sum().sum()
@@ -157,7 +168,7 @@ class CFEMarket:
             print(
                 f"  警告：可再生能源略有不足！缺口 {shortage:.1f} MW ({shortage / total_participant * 100:.1f}%), 储能可补充 ~{min(50 * 39 * 2, shortage):.0f} MW")
 
-    def create_model(self, scenario='volumetric', matching_target=0.90):
+    def create_model(self, scenario='volumetric', matching_target=0.98):
         self.scenario = scenario
         m = ConcreteModel(name=scenario)
 
@@ -166,50 +177,53 @@ class CFEMarket:
         m.G = Set(initialize=self.gen_idx)
         m.B = Set(initialize=self.bus_idx)
         m.E = Set(initialize=self.branch_num_idx)
+        m.S = Set(initialize=self.storage_buses)
         m.P_gen = Var(m.G, m.T, bounds=(0, None))
-        m.P_charge = Var(m.B, m.T, bounds=(0, None))
-        m.P_discharge = Var(m.B, m.T, bounds=(0, None))
-        m.E_storage = Var(m.B, m.T, bounds=(0, None))
-        m.P_Cap = Param(initialize=50)
+        m.P_charge = Var(m.S, m.T, bounds=(0, None))
+        m.P_discharge = Var(m.S, m.T, bounds=(0, None))
+        m.E_storage = Var(m.S, m.T, bounds=(0, None))
+        m.P_Cap = Param(initialize=300)
         m.Pf = Var(self.branch_idx, m.T, bounds=(None, None))
-        m.E_storagefirst = Param(initialize=50)
+        m.E_storageinitial = Param(initialize=300)
         # 辅助函数
         BusGen = lambda g, b: 1 if g[1:] == b else 0
         PTDF = lambda n, b: self.PTDF_matrix[b][self.branch_idx[n]]
 
         # 目标函数
         m.obj = Objective(rule=lambda m: sum(self.Cost.at[g, 'Cost'] * m.P_gen[g, t] for g in m.G for t in m.T) + sum(
-            self.storage_opex * (m.P_charge[b, t] + m.P_discharge[b, t]) for b in m.B for t in m.T), sense=minimize)
+            -self.storage_opex * (m.P_charge[b, t] + m.P_discharge[b, t]) for b in m.S for t in m.T), sense=minimize)
+
+
 
         # 约束
-        m.power_balance = Constraint(m.T, rule=lambda m, t: sum(m.P_gen[g, t] for g in m.G) == sum(
-            self.Pd.loc[b, t] + m.P_charge[b, t] - m.P_discharge[b, t] - self.solar_output.loc[b, t] -
-            self.wind_output.loc[b, t] for b in m.B))
+        m.power_balance = Constraint(m.T, rule=lambda m, t:
+        sum(m.P_gen[g, t] for g in m.G) == sum(self.Pd.loc[b, t] - self.solar_output.loc[b, t] - self.wind_output.loc[b, t] for b in m.B) + sum(m.P_charge[s, t] - m.P_discharge[s, t] for s in m.S))
         m.dc_flow = Constraint(m.E, m.T, rule=lambda m, n, t: m.Pf[self.branch_idx[n], t] == sum((sum(m.P_gen[g, t] * BusGen(g, b) for g in m.G)
-        - self.Pd.loc[b, t] - m.P_charge[b, t] + m.P_discharge[b, t] +self.solar_output.loc[ b, t] +self.wind_output.loc[b, t]) * PTDF(n, b)for b in m.B))
+        - self.Pd.loc[b, t] +self.solar_output.loc[ b, t] +self.wind_output.loc[b, t]) * PTDF(n, b)for b in m.B) + sum((m.P_discharge[s, t]- m.P_charge[s, t])* PTDF(n, s)for s in m.S))
         m.branch_upper = Constraint(m.E, m.T, rule=lambda m, n, t: m.Pf[self.branch_idx[n], t] <= self.Pf_max.at[
             self.branch_idx[n], 'Pf_max'])
         m.branch_lower = Constraint(m.E, m.T, rule=lambda m, n, t: m.Pf[self.branch_idx[n], t] >= -self.Pf_max.at[
             self.branch_idx[n], 'Pf_max'])
         m.gen_min = Constraint(m.G, m.T, rule=lambda m, g, t: m.P_gen[g, t] >= self.Pg_min.at[g, 'Pg_min'])
         m.gen_max = Constraint(m.G, m.T, rule=lambda m, g, t: m.P_gen[g, t] <= self.Pg_max.at[g, 'Pg_max'])
-        m.storage_dynamic = Constraint(m.B, m.T, rule=lambda m, b, t: m.E_storage[b, t] == (
-            m.E_storagefirst + self.storage_eff * m.P_charge[b, t] - m.P_discharge[b, t] / self.storage_eff if t == 0 else m.E_storage[b, t - 1]) + self.storage_eff * m.P_charge[b, t] - m.P_discharge[b, t] / self.storage_eff)
-        m.storage_limit = Constraint(m.B, m.T,
+        m.storage_dynamic = Constraint(m.S, m.T, rule=lambda m, b, t: m.E_storage[b, t] == (
+            m.E_storageinitial + self.storage_eff * m.P_charge[b, t] - m.P_discharge[b, t] / self.storage_eff if t == 0 else m.E_storage[b, t - 1]) + self.storage_eff * m.P_charge[b, t] - m.P_discharge[b, t] / self.storage_eff)
+        m.storage_limit = Constraint(m.S, m.T,
                                      rule=lambda m, b, t: m.E_storage[b, t] <= m.P_Cap * self.storage_duration)
-        m.charge_limit = Constraint(m.B, m.T, rule=lambda m, b, t: m.P_charge[b, t] <= m.P_Cap)
-        m.discharge_limit = Constraint(m.B, m.T, rule=lambda m, b, t: m.P_discharge[b, t] <= m.P_Cap)
-        m.storage_cyclic = Constraint(m.B, rule=lambda m, b: m.E_storagefirst == m.E_storage[b, self.T - 1])
+        m.charge_limit = Constraint(m.S, m.T, rule=lambda m, b, t: m.P_charge[b, t] <= m.P_Cap)
+        m.discharge_limit = Constraint(m.S, m.T, rule=lambda m, b, t: m.P_discharge[b, t] <= m.P_Cap)
+        m.storage_cyclic = Constraint(m.S, rule=lambda m, b: m.E_storageinitial == m.E_storage[b, self.T - 1])
 
         #CFE匹配约束
         if scenario == 'volumetric':
             m.matching = Constraint(rule=lambda m: sum(
-                self.solar_output.loc[b, t] + self.wind_output.loc[b, t] + m.P_discharge[b, t] - m.P_charge[b, t] for b
-                in m.B for t in m.T) >= sum(self.participant_demand.loc[b, t] for b in m.B for t in m.T))
+                self.solar_output.loc[b, t] + self.wind_output.loc[b, t]  for b in m.B for t in m.T) + sum(m.P_discharge[s, t] - m.P_charge[s, t]
+            for s in m.S for t in m.T) >= sum(self.participant_demand.loc[b, t] for b in m.B for t in m.T))
         elif scenario == 'hourly':
             m.matching = Constraint(m.T, rule=lambda m, t: sum(
-                self.solar_output.loc[b, t] + self.wind_output.loc[b, t] + m.P_discharge[b, t] - m.P_charge[b, t] for b
-                in m.B) >= sum(self.participant_demand.loc[b, t] for b in m.B) * matching_target)
+                self.solar_output.loc[b, t] + self.wind_output.loc[b, t] for b in m.B ) + sum(
+                m.P_discharge[s, t] - m.P_charge[s, t]
+                for s in m.S )>= sum(self.participant_demand.loc[b, t] for b in m.B) * matching_target)
 
         self.model = m
 
@@ -225,10 +239,15 @@ class CFEMarket:
 
     def extract_results(self):
         m = self.model
-        total_charge = [sum(value(m.P_charge[b, t]) for b in m.B) for t in m.T]
-        total_discharge = [sum(value(m.P_discharge[b, t]) for b in m.B) for t in m.T]
-        total_storage = [value(m.E_storagefirst) * 39] + [sum(value(m.E_storage[b, t]) for b in m.B) for t in m.T]
-        # 保存每个节点每个时刻的LMP
+        total_charge = [sum(value(m.P_charge[b, t]) for b in m.S) for t in m.T]
+        total_discharge = [sum(value(m.P_discharge[b, t]) for b in m.S) for t in m.T]
+        total_storage = [value(m.E_storageinitial) * 5] + [sum(value(m.E_storage[b, t]) for b in m.S) for t in m.T]
+
+        nodal_storage = {}
+        for s in m.S:
+            nodal_storage[s] = [value(m.E_storageinitial)] + [value(m.E_storage[s, t]) for t in m.T]
+
+
         nodal_LMP = {}
         avg_LMP = []
 
@@ -254,14 +273,14 @@ class CFEMarket:
             avg_LMP.append(weighted_lmp)
 
 
-        revenue = sum(sum((- self.storage_opex - nodal_LMP[b][t]) * value(m.P_charge[b, t]) for b in m.B) for t in m.T) + \
-                  sum(sum((nodal_LMP[b][t] - self.storage_opex) * value(m.P_discharge[b, t]) for b in m.B) for t in m.T)
+        revenue = sum(sum((- self.storage_opex - nodal_LMP[b][t]) * value(m.P_charge[b, t]) for b in m.S) for t in m.T) + \
+                  sum(sum((nodal_LMP[b][t] - self.storage_opex) * value(m.P_discharge[b, t]) for b in m.S) for t in m.T)
 
-        return {'scenario': self.scenario, 'cost': value(m.obj), 'storage_cap': sum(value(m.P_Cap) for b in m.B),
+        return {'scenario': self.scenario, 'cost': value(m.obj), 'storage_cap': sum(value(m.P_Cap) for b in m.S),
                 'P_charge': total_charge, 'P_discharge': total_discharge,
                 'LMP': avg_LMP, 'nodal_LMP': nodal_LMP,
                 'emissions': sum(value(m.P_gen[g, t]) * self.GCI.at[g, 'GCI'] for g in m.G for t in m.T),
-                'revenue': revenue,'E_storage':total_storage}
+                'revenue': revenue,'E_storage':total_storage,'nodal_storage':nodal_storage}
 
 
 def plot_results(vol, hourly, market, target_date):
@@ -278,39 +297,44 @@ def plot_results(vol, hourly, market, target_date):
     axes[0, 0].legend(fontsize=11)
     axes[0, 0].grid(True, alpha=0.3)
 
-    # 储能充电
+    # 储能充放电
     net_vol = [vol['P_discharge'][t] - vol['P_charge'][t] for t in range(24)]
     net_hourly = [hourly['P_discharge'][t] - hourly['P_charge'][t] for t in range(24)]
     axes[0, 1].bar(hours - 0.2, net_vol, width=0.35, alpha=0.4, color='blue')
     axes[0, 1].bar(hours + 0.2, net_hourly, width=0.35, alpha=0.4, color='red')
     axes[0, 1].set_xlabel('时段 (h)', fontsize=12)
     axes[0, 1].set_ylabel('功率 (MW)', fontsize=12)
-    axes[0, 1].set_title('储能充电', fontsize=13, fontweight='bold')
+    axes[0, 1].set_title('储能充放电', fontsize=13, fontweight='bold')
 
+    # 5个储能节点的储能状态变化（Volumetric场景）
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']  # 5种颜色
+    storage_nodes = sorted(vol['nodal_storage'].keys(), key=lambda x: int(x))  # 按节点编号排序
 
+    for idx, node in enumerate(storage_nodes):
+        axes[0, 2].plot(hoursE, vol['nodal_storage'][node],
+                        marker='o', linewidth=2.0, markersize=4,
+                        label=f'节点{node}', color=colors[idx])
 
-
-    # 储能放电
-    axes[0, 2].bar(hours - 0.2, vol['P_discharge'], width=0.35, label='Vol', alpha=0.7, color='blue')
-    axes[0, 2].bar(hours + 0.2, hourly['P_discharge'], width=0.35, label='Hourly', alpha=0.7, color='red')
     axes[0, 2].set_xlabel('时段 (h)', fontsize=12)
-    axes[0, 2].set_ylabel('功率 (MW)', fontsize=12)
-    axes[0, 2].set_title('储能放电', fontsize=13, fontweight='bold')
+    axes[0, 2].set_ylabel('储能状态 (MWh)', fontsize=12)
+    axes[0, 2].set_title('储能节点状态变化 (Volumetric)', fontsize=13, fontweight='bold')
     axes[0, 2].legend(fontsize=11)
     axes[0, 2].grid(True, alpha=0.3, axis='y')
 
-    # 可再生能源
-    total_solar = market.solar_output.sum(axis=0).values
-    total_wind = market.wind_output.sum(axis=0).values
-    total_demand = market.participant_demand.sum(axis=0).values
-    axes[1, 0].fill_between(hours, 0, total_solar, label='光伏', alpha=0.6, color='yellow')
-    axes[1, 0].fill_between(hours, total_solar, total_solar + total_wind, label='风电', alpha=0.6, color='green')
-    axes[1, 0].plot(hours, total_demand, 'k--', label='参与者需求', linewidth=2.5)
+    # 5个储能节点的储能状态变化（Hourly场景）
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']  # 5种颜色
+    storage_nodes = sorted(hourly['nodal_storage'].keys(), key=lambda x: int(x))  # 按节点编号排序
+
+    for idx, node in enumerate(storage_nodes):
+        axes[1, 0].plot(hoursE, hourly['nodal_storage'][node],
+                        marker='o', linewidth=2.0, markersize=4,
+                        label=f'节点{node}', color=colors[idx])
+
     axes[1, 0].set_xlabel('时段 (h)', fontsize=12)
-    axes[1, 0].set_ylabel('功率 (MW)', fontsize=12)
-    axes[1, 0].set_title('可再生能源', fontsize=13, fontweight='bold')
-    axes[1, 0].legend(fontsize=10)
-    axes[1, 0].grid(True, alpha=0.3)
+    axes[1, 0].set_ylabel('储能状态 (MWh)', fontsize=12)
+    axes[1, 0].set_title('储能节点状态变化 (Hourly)', fontsize=13, fontweight='bold')
+    axes[1, 0].legend(fontsize=11)
+    axes[1, 0].grid(True, alpha=0.3, axis='y')
 
     # 关键指标
     metrics = ['成本', '储能充放电', '储能收益', '排放']
@@ -386,14 +410,14 @@ if __name__ == "__main__":
     market.create_model('volumetric')
     vol = market.solve()
     if vol:
-        print(f"✓ 成本: ${vol['cost']:.2f}, 储能: {vol['storage_cap']:.1f} MW, 排放: {vol['emissions']:.1f} tCO2,放电：{vol['P_discharge']}:.1f,充电：{vol['P_charge']}:.1f")
+        print(f"✓ 成本: ${vol['cost']:.2f}, 储能: {vol['storage_cap']:.1f} MW, 排放: {vol['emissions']:.1f} tCO2")
     else:
         print("求解失败")
         exit()
 
     # 求解Hourly
     print("\n[2/2] 求解Hourly (90%)...")
-    market.create_model('hourly', matching_target=0.90)
+    market.create_model('hourly', matching_target=0.98)
     hourly = market.solve()
     if hourly:
         print(
