@@ -37,14 +37,12 @@ def load_real_data(load_file, solar_file, wind_file, target_month='2017-01', aut
     # 提取指定年月的数据
     load_month = \
         load_df[(load_df['timestamp'].dt.year == year) & (load_df['timestamp'].dt.month == month)].groupby(
-            'hour_of_month')[
-            'load_actuals_MW'].mean()
+            'hour_of_month')['load_actuals_MW'].mean()
     solar_month = solar_df[(solar_df['timestamp'].dt.year == year) & (solar_df['timestamp'].dt.month == month)].groupby(
         'hour_of_month')['total_solar'].mean()
     wind_month = \
         wind_df[(wind_df['timestamp'].dt.year == year) & (wind_df['timestamp'].dt.month == month)].groupby(
-            'hour_of_month')[
-            'BA'].mean()
+            'hour_of_month')['BA'].mean()
 
     load_744 = np.array([load_month.get(h, 0) for h in range(744)])
     solar_744 = np.array([solar_month.get(h, 0) for h in range(744)])
@@ -165,7 +163,7 @@ class CFEMarket:
         total_participant = self.participant_demand.sum().sum()
         total_renewable = self.solar_output.sum().sum() + self.wind_output.sum().sum()
         print(
-            f"\nCFE市场配置：参与者需求(10%): {total_participant:.1f} MW, 可再生能源: {total_renewable:.1f} MW, 比例: {total_renewable / total_participant * 100:.1f}%")
+            f"\nCFE市场配置：参与者需求(20%): {total_participant:.1f} MW, 可再生能源: {total_renewable:.1f} MW, 比例: {total_renewable / total_participant * 100:.1f}%")
         if total_renewable < total_participant * 0.95:
             shortage = total_participant - total_renewable
             print(
@@ -245,6 +243,7 @@ class CFEMarket:
         total_charge = [sum(value(m.P_charge[b, t]) for b in m.S) for t in m.T]
         total_discharge = [sum(value(m.P_discharge[b, t]) for b in m.S) for t in m.T]
         total_storage = [value(m.E_storageinitial) * 5] + [sum(value(m.E_storage[b, t]) for b in m.S) for t in m.T]
+
 
         nodal_storage = {}
         for s in m.S:
@@ -330,6 +329,16 @@ def plot_results(vol, hourly, market, target_month):
         hourly_nodal_lmp_daily[node] = np.array(
             [np.mean(hourly['nodal_LMP'][node][d * 24:(d + 1) * 24]) for d in range(31)])
 
+    total_load_744h = market.participant_demand.sum(axis=0).values
+    total_solar_744h = market.solar_output.sum(axis=0).values
+    total_wind_744h = market.wind_output.sum(axis=0).values
+    total_renewable_744h = total_solar_744h + total_wind_744h
+    total_load_daily = np.array(
+        [np.sum([total_load_744h[t] for t in range(d * 24, (d + 1) * 24)]) for d in range(31)])
+    total_renewable_daily = np.array(
+        [np.sum([total_renewable_744h[t] for t in range(d * 24, (d + 1) * 24)]) for d in range(31)])
+
+
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 
 
@@ -399,18 +408,24 @@ def plot_results(vol, hourly, market, target_month):
     axes[1, 2].set_title(f'储能变化情况 ({target_month})', fontsize=13, fontweight='bold')
     axes[1, 2].legend(fontsize=11)
     axes[1, 2].grid(True, alpha=0.3)
-
+    # 负荷和新能源变化情况
+    axes[1, 2].plot(days, total_load_daily, 'b-o', label='Volumetric', linewidth=2.5)
+    axes[1, 2].plot(days, total_renewable_daily, 'r-s', label='Hourly (90%)', linewidth=2.5)
+    axes[1, 2].set_xlabel('时间 (天', fontsize=12)
+    axes[1, 2].set_ylabel('容量 (MWh)', fontsize=12)
+    axes[1, 2].set_title(f'负荷和新能源变化情况 ({target_month})', fontsize=13, fontweight='bold')
+    axes[1, 2].legend(fontsize=11)
+    axes[1, 2].grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig('lmp_results_monthly.png', dpi=300, bbox_inches='tight')
 
     print("\n生成各节点LMP折线图...")
 
-    nodal_lmp_vol = vol['nodal_LMP']
-    nodes = sorted(nodal_lmp_vol.keys(), key=lambda x: int(x))
+
 
     from matplotlib.backends.backend_pdf import PdfPages
-    with PdfPages('nodal_lmp_lines.pdf') as pdf:
+    with PdfPages('nodal_lmp_lines_monthly.pdf') as pdf:
         for node in nodes:
             fig_node = plt.figure(figsize=(8, 4.5))
             plt.plot(days, vol_nodal_lmp_daily[node], '-o', linewidth=2.0, markersize=4, label='Volumetric')

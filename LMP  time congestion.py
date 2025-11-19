@@ -154,7 +154,7 @@ class CFEMarket:
         # 储能参数
         self.storage_eff = 0.95
         self.storage_duration = 2
-        self.storage_opex = 2.0
+        self.storage_opex = 3.0
         self.storage_buses = [str(min(i, len(self.bus_idx) - 1)) for i in [3, 8, 13, 18, 23]]
         self.storage_buses = [b for b in self.storage_buses if int(b) < len(self.bus_idx)]
         print(f"\n储能配置：{len(self.storage_buses)}个储能节点 - 节点{self.storage_buses}")
@@ -352,12 +352,16 @@ def plot_results(vol, hourly, market, target_date):
     axes[1, 1].legend(fontsize=11)
     axes[1, 1].grid(True, alpha=0.3, axis='y')
 
-    # 储能变化情况
-    axes[1, 2].plot(hoursE, vol['E_storage'], 'b-o', label='Volumetric', linewidth=2.5)
-    axes[1, 2].plot(hoursE, hourly['E_storage'], 'r-s', label='Hourly (90%)', linewidth=2.5)
+    # 负荷和新能源变化情况
+    total_load_24h = market.participant_demand.sum(axis=0).values
+    total_solar_24h = market.solar_output.sum(axis=0).values
+    total_wind_24h = market.wind_output.sum(axis=0).values
+    total_renewable_24h = total_solar_24h + total_wind_24h
+    axes[1, 2].plot(hours, total_load_24h, 'k-o', label='load', linewidth=2.5)
+    axes[1, 2].plot(hours, total_renewable_24h, 'g-s', label='renewable', linewidth=2.5)
     axes[1, 2].set_xlabel('时段 (h)', fontsize=12)
-    axes[1, 2].set_ylabel('储能容量 (MWh)', fontsize=12)
-    axes[1, 2].set_title(f'储能变化情况 ({target_date})', fontsize=13, fontweight='bold')
+    axes[1, 2].set_ylabel('容量 (MWh)', fontsize=12)
+    axes[1, 2].set_title(f'负荷和新能源变化情况 ({target_date})', fontsize=13, fontweight='bold')
     axes[1, 2].legend(fontsize=11)
     axes[1, 2].grid(True, alpha=0.3)
 
