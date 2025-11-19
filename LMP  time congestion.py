@@ -154,7 +154,7 @@ class CFEMarket:
         # 储能参数
         self.storage_eff = 0.95
         self.storage_duration = 2
-        self.storage_opex = 3.0
+        self.storage_opex = 2.0
         self.storage_buses = [str(min(i, len(self.bus_idx) - 1)) for i in [3, 8, 13, 18, 23]]
         self.storage_buses = [b for b in self.storage_buses if int(b) < len(self.bus_idx)]
         print(f"\n储能配置：{len(self.storage_buses)}个储能节点 - 节点{self.storage_buses}")
@@ -162,7 +162,7 @@ class CFEMarket:
         total_participant = self.participant_demand.sum().sum()
         total_renewable = self.solar_output.sum().sum() + self.wind_output.sum().sum()
         print(
-            f"\nCFE市场配置：参与者需求(10%): {total_participant:.1f} MW, 可再生能源: {total_renewable:.1f} MW, 比例: {total_renewable / total_participant * 100:.1f}%")
+            f"\nCFE市场配置：参与者需求(9%): {total_participant:.1f} MW, 可再生能源: {total_renewable:.1f} MW, 比例: {total_renewable / total_participant * 100:.1f}%")
         if total_renewable < total_participant * 0.95:
             shortage = total_participant - total_renewable
             print(
@@ -191,7 +191,7 @@ class CFEMarket:
 
         # 目标函数
         m.obj = Objective(rule=lambda m: sum(self.Cost.at[g, 'Cost'] * m.P_gen[g, t] for g in m.G for t in m.T) + sum(
-            -self.storage_opex * (m.P_charge[b, t] + m.P_discharge[b, t]) for b in m.S for t in m.T), sense=minimize)
+            self.storage_opex * (m.P_charge[b, t] + m.P_discharge[b, t]) for b in m.S for t in m.T), sense=minimize)
 
 
 
@@ -290,7 +290,7 @@ def plot_results(vol, hourly, market, target_date):
 
     # LMP对比
     axes[0, 0].plot(hours, vol['LMP'], 'b-o', label='Volumetric', linewidth=2.5)
-    axes[0, 0].plot(hours, hourly['LMP'], 'r-s', label='Hourly (90%)', linewidth=2.5)
+    axes[0, 0].plot(hours, hourly['LMP'], 'r-s', label='Hourly (98%)', linewidth=2.5)
     axes[0, 0].set_xlabel('时段 (h)', fontsize=12)
     axes[0, 0].set_ylabel('平均LMP ($/MWh)', fontsize=12)
     axes[0, 0].set_title(f'边际电价对比 ({target_date})', fontsize=13, fontweight='bold')
@@ -378,7 +378,7 @@ def plot_results(vol, hourly, market, target_date):
         for node in nodes:
             fig_node = plt.figure(figsize=(8, 4.5))
             plt.plot(hours, nodal_lmp_vol[node], '-o', linewidth=2.0, markersize=4, label='Volumetric')
-            plt.plot(hours, hourly['nodal_LMP'][node], '-s', linewidth=2.0, markersize=4, label='Hourly (90%)')
+            plt.plot(hours, hourly['nodal_LMP'][node], '-s', linewidth=2.0, markersize=4, label='Hourly (98%)')
             plt.xlabel('时段 (h)', fontsize=12)
             plt.ylabel('LMP ($/MWh)', fontsize=12)
             plt.title(f'节点{node} - LMP时序（{target_date}）', fontsize=13, fontweight='bold')
@@ -420,7 +420,7 @@ if __name__ == "__main__":
         exit()
 
     # 求解Hourly
-    print("\n[2/2] 求解Hourly (90%)...")
+    print("\n[2/2] 求解Hourly (98%)...")
     market.create_model('hourly', matching_target=0.98)
     hourly = market.solve()
     if hourly:
