@@ -192,7 +192,7 @@ class CFEMarket:
 
         # 目标函数
         m.obj = Objective(rule=lambda m: sum(self.Cost.at[g, 'Cost'] * m.P_gen[g, t] for g in m.G for t in m.T) + sum(
-            -self.storage_opex * (m.P_charge[b, t] + m.P_discharge[b, t]) for b in m.S for t in m.T), sense=minimize)
+            self.storage_opex * (m.P_charge[b, t] + m.P_discharge[b, t]) for b in m.S for t in m.T), sense=minimize)
 
 
 
@@ -400,17 +400,17 @@ def plot_results(vol, hourly, market, target_month):
     axes[1, 1].legend(fontsize=11)
     axes[1, 1].grid(True, alpha=0.3, axis='y')
 
-    # 储能变化情况
-    axes[1, 2].plot(daysE, vol_storage_daily, 'b-o', label='Volumetric', linewidth=2.5)
-    axes[1, 2].plot(daysE, hourly_storage_daily, 'r-s', label='Hourly (90%)', linewidth=2.5)
-    axes[1, 2].set_xlabel('时间 (天', fontsize=12)
-    axes[1, 2].set_ylabel('储能容量 (MWh)', fontsize=12)
-    axes[1, 2].set_title(f'储能变化情况 ({target_month})', fontsize=13, fontweight='bold')
-    axes[1, 2].legend(fontsize=11)
-    axes[1, 2].grid(True, alpha=0.3)
+    # # 储能变化情况
+    # axes[1, 2].plot(daysE, vol_storage_daily, 'b-o', label='Volumetric', linewidth=2.5)
+    # axes[1, 2].plot(daysE, hourly_storage_daily, 'r-s', label='Hourly (90%)', linewidth=2.5)
+    # axes[1, 2].set_xlabel('时间 (天', fontsize=12)
+    # axes[1, 2].set_ylabel('储能容量 (MWh)', fontsize=12)
+    # axes[1, 2].set_title(f'储能变化情况 ({target_month})', fontsize=13, fontweight='bold')
+    # axes[1, 2].legend(fontsize=11)
+    # axes[1, 2].grid(True, alpha=0.3)
     # 负荷和新能源变化情况
-    axes[1, 2].plot(days, total_load_daily, 'b-o', label='Volumetric', linewidth=2.5)
-    axes[1, 2].plot(days, total_renewable_daily, 'r-s', label='Hourly (90%)', linewidth=2.5)
+    axes[1, 2].plot(days, total_load_daily, 'b-o', label='load', linewidth=2.5)
+    axes[1, 2].plot(days, total_renewable_daily, 'r-s', label='renewable', linewidth=2.5)
     axes[1, 2].set_xlabel('时间 (天', fontsize=12)
     axes[1, 2].set_ylabel('容量 (MWh)', fontsize=12)
     axes[1, 2].set_title(f'负荷和新能源变化情况 ({target_month})', fontsize=13, fontweight='bold')
