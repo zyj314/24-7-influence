@@ -342,7 +342,7 @@ def validate_cost_timeseries(market, scenario='volumetric', delta=1e-4):
     part_backup = market.participant_demand.copy()
 
     T = market.T
-    buses = [29]
+    buses = [4]
     participant_ratio = 0.09
 
 
