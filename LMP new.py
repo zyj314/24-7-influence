@@ -204,9 +204,9 @@ class CFEMarket:
             m.B) + sum((m.P_discharge[s, t] - m.P_charge[s, t]) * PTDF(n, s) for s in m.S))
         m.branch_upper = Constraint(m.E, m.T, rule=lambda m, n, t: m.Pf[self.branch_idx[n], t] <= self.Pf_max.at[
             self.branch_idx[n], 'Pf_max'])
-        m.branch_lower = Constraint(m.E, m.T, rule=lambda m, n, t: m.Pf[self.branch_idx[n], t] >= -self.Pf_max.at[
-            self.branch_idx[n], 'Pf_max'])
-        m.gen_min = Constraint(m.G, m.T, rule=lambda m, g, t: m.P_gen[g, t] >= self.Pg_min.at[g, 'Pg_min'])
+        m.branch_lower = Constraint(m.E, m.T, rule=lambda m, n, t:  -self.Pf_max.at[
+            self.branch_idx[n] <= m.Pf[self.branch_idx[n], t], 'Pf_max'])
+        m.gen_min = Constraint(m.G, m.T, rule=lambda m, g, t: self.Pg_min.at[g, 'Pg_min'] <= m.P_gen[g, t])
         m.gen_max = Constraint(m.G, m.T, rule=lambda m, g, t: m.P_gen[g, t] <= self.Pg_max.at[g, 'Pg_max'])
 
         m.storage_dynamic = Constraint(
@@ -226,15 +226,15 @@ class CFEMarket:
 
         # CFE匹配约束
         if scenario == 'volumetric':
-            m.matching = Constraint(rule=lambda m: sum(
+            m.matching = Constraint(rule=lambda m:  sum(self.participant_demand.loc[b, t] for b in m.B for t in m.T) <= sum(
                 self.solar_output.loc[b, t] + self.wind_output.loc[b, t] for b in m.B for t in m.T) + sum(
                 m.P_discharge[s, t] - m.P_charge[s, t]
-                for s in m.S for t in m.T) >= sum(self.participant_demand.loc[b, t] for b in m.B for t in m.T))
+                for s in m.S for t in m.T))
         elif scenario == 'hourly':
-            m.matching = Constraint(m.T, rule=lambda m, t: sum(
+            m.matching = Constraint(m.T, rule=lambda m, t:  sum(self.participant_demand.loc[b, t] for b in m.B) * matching_target <= sum(
                 self.solar_output.loc[b, t] + self.wind_output.loc[b, t] for b in m.B) + sum(
                 m.P_discharge[s, t] - m.P_charge[s, t]
-                for s in m.S) >= sum(self.participant_demand.loc[b, t] for b in m.B) * matching_target)
+                for s in m.S))
 
         self.model = m
 
@@ -280,7 +280,7 @@ class CFEMarket:
                 mu_t = mu_matching
             elif self.scenario == 'hourly':
                 # Hourly:每个时段有独立的mu
-                mu_t = m.dual[m.matching[t]]
+                mu_t = m.dual[m.matching[t]] * 0.90
             else:
                 mu_t = 0.0
 
