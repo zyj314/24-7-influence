@@ -271,10 +271,10 @@ class CFEMarket:
         participant_ratio = 0.09
 
         for t in m.T:
-            # 1. 功率平衡约束的拉格朗日乘子
+            # 2. 功率平衡约束的拉格朗日乘子
             lambda_pb = m.dual[m.power_balance[t]]
 
-            # 2. 获取CFE匹配约束的拉格朗日乘子
+            # 1. 获取CFE匹配约束的拉格朗日乘子
             if self.scenario == 'volumetric':
                 # Volumetric:所有时段使用相同的mu
                 mu_t = mu_matching
@@ -287,6 +287,7 @@ class CFEMarket:
 
             lmp_values = {}
             for b in m.B:
+
                 # 3. 传输约束的拉格朗日乘子(堵塞成本)
                 congestion_component = sum(
                     (m.dual[m.branch_lower[n, t]] - m.dual[m.branch_upper[n, t]]) *
@@ -335,14 +336,14 @@ class CFEMarket:
             'nodal_storage': nodal_storage
         }
 
-def validate_cost_timeseries(market, scenario='volumetric', delta=1e-4):
+def validate_cost_timeseries(market, scenario='volumetric', delta=1e-8):
 
-    # 备份原始 Pd 和 participant_demand
+
     Pd_backup = market.Pd.copy()
-    part_backup = market.participant_demand.copy()
+    # part_backup = market.participant_demand.copy()
 
     T = market.T
-    buses = [4]
+    buses = [4,18,23,36]
     participant_ratio = 0.09
 
 
@@ -362,9 +363,9 @@ def validate_cost_timeseries(market, scenario='volumetric', delta=1e-4):
         for t in range(T):
         # 每个时段从基线恢复一次
             market.Pd = Pd_backup.copy()
-            market.participant_demand = part_backup.copy()
+            # market.participant_demand = part_backup.copy()
             market.Pd.loc[str(bus), t] += delta
-            market.participant_demand.loc[str(bus), t] += participant_ratio * delta
+            # market.participant_demand.loc[str(bus), t] += participant_ratio * delta
 
         # 重新建模并求解
             market.create_model(scenario)
@@ -381,7 +382,7 @@ def validate_cost_timeseries(market, scenario='volumetric', delta=1e-4):
 
     # ------- 3) 恢复原始数据 --------
     market.Pd = Pd_backup
-    market.participant_demand = part_backup
+    # market.participant_demand = part_backup
 
     hours = np.arange(T)
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
@@ -563,7 +564,7 @@ if __name__ == "__main__":
     print(f"图片已保存为 lmp_results.png")
 
     #  Volumetric 场景
-    validate_cost_timeseries(market, scenario='volumetric', delta=1e-4)
+    validate_cost_timeseries(market, scenario='volumetric', delta=1e-8)
 
     #  Hourly 场景：
-    validate_cost_timeseries(market, scenario='hourly', delta=1e-4)
+    validate_cost_timeseries(market, scenario='hourly', delta=1e-8)
